@@ -1,0 +1,187 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Google Drive Upload (GIS)</title>
+  <script src="https://accounts.google.com/gsi/client" async defer></script>
+</head>
+<body>
+  <h2>Upload Image to Google Drive</h2>
+
+  <button onclick="signIn()">Sign In with Google</button>
+  <br><br>
+
+  <input type="file" id="fileInput" accept="image/*">
+  <button onclick="uploadFile()">Upload</button>
+
+  <h2>Uploaded Files:</h2>
+  <div id="fileLink"></div>
+  <div id="filePreview"></div>
+
+  <script>
+    const CLIENT_ID = "303161206068-8c1rhjrfurf55ecl2t45kvv0h23h0gkc.apps.googleusercontent.com";
+    const SCOPES = "https://www.googleapis.com/auth/drive.file";
+
+    let accessToken = null;
+    let tokenClient;
+
+    // Initialize token client
+    window.onload = () => {
+      tokenClient = google.accounts.oauth2.initTokenClient({
+        client_id: CLIENT_ID,
+        scope: SCOPES,
+        callback: (tokenResponse) => {
+          accessToken = tokenResponse.access_token;
+          refreshToken = tokenResponse.refresh_token;
+          console.log('refreshToken: ', refreshToken)
+          console.log('accessToken: ', accessToken)
+          localStorage.setItem("drive_token", accessToken);
+          console.log("Signed in successfully");
+          loadSavedFiles();
+        },
+      });
+
+      // Try silent login (no popup if already granted)
+      tokenClient.requestAccessToken({ prompt: '' });
+    };
+
+    function signIn() {
+      tokenClient.requestAccessToken();
+    }
+
+    function uploadFile() {
+  const fileInput = document.getElementById("fileInput");
+  if (!fileInput.files.length) {
+    alert("Please select a file first!");
+    return;
+  }
+  /*if (!accessToken) {
+    alert("Please sign in first!");
+    return;
+  }*/
+
+  const file = fileInput.files[0];
+
+  // Step 1: Check if a file with the same name exists
+  fetch(`https://www.googleapis.com/drive/v3/files?q=name='${file.name}' and trashed=false&fields=files(id,name)`, {
+    headers: { "Authorization": "Bearer " + accessToken }
+  })
+  .then(res => res.json())
+  .then(result => {
+    if (result.files && result.files.length > 0) {
+      // File with same name exists → Update it
+      const existingFileId = result.files[0].id;
+      console.log("Overriding file:", existingFileId);
+
+      const metadata = {
+        name: file.name,
+        mimeType: file.type,
+      };
+
+      const form = new FormData();
+      form.append("metadata", new Blob([JSON.stringify(metadata)], { type: "application/json" }));
+      form.append("file", file);
+
+      return fetch(`https://www.googleapis.com/upload/drive/v3/files/${existingFileId}?uploadType=multipart`, {
+        method: "PATCH",
+        headers: { "Authorization": "Bearer " + accessToken },
+        body: form,
+      })
+      .then(res => res.json())
+      .then(data => {
+        makeFilePublic(existingFileId, file.name);
+      });
+
+    } else {
+      // No existing file → create new one
+      const metadata = {
+        name: file.name,
+        mimeType: file.type,
+      };
+
+      const form = new FormData();
+      form.append("metadata", new Blob([JSON.stringify(metadata)], { type: "application/json" }));
+      form.append("file", file);
+
+      return fetch("https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart", {
+        method: "POST",
+        headers: { "Authorization": "Bearer " + accessToken },
+        body: form,
+      })
+      .then(res => res.json())
+      .then(data => {
+        if (data.id) {
+          makeFilePublic(data.id, file.name);
+        }
+      });
+    }
+  })
+  .catch(err => console.error("Upload/override error:", err));
+}
+
+    function makeFilePublic(fileId, fileName) {
+      fetch(`https://www.googleapis.com/drive/v3/files/${fileId}/permissions`, {
+        method: "POST",
+        headers: {
+          "Authorization": "Bearer " + accessToken,
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          role: "reader",
+          type: "anyone"
+        }),
+      })
+      .then(() => {
+        return fetch(`https://www.googleapis.com/drive/v3/files/${fileId}?fields=id,name,webViewLink`, {
+          headers: { "Authorization": "Bearer " + accessToken }
+        });
+      })
+      .then(res => res.json())
+      .then(file => {
+        // Save fileId in localStorage
+        let savedFiles = JSON.parse(localStorage.getItem("uploaded_files")) || [];
+        if (!savedFiles.includes(file.id)) {
+          savedFiles.push(file.id);
+          localStorage.setItem("uploaded_files", JSON.stringify(savedFiles));
+        }
+
+        showFile(file);
+      })
+      .catch(err => console.error("Permission/metadata error:", err));
+    }
+
+    function showFile(file) {
+      // Fetch the file content directly from Drive API
+      fetch(`https://www.googleapis.com/drive/v3/files/${file.id}?alt=media`, {
+        headers: { "Authorization": "Bearer " + accessToken }
+      })
+      .then(res => res.blob())
+      .then(blob => {
+        const imgUrl = URL.createObjectURL(blob);
+
+        document.getElementById("fileLink").innerHTML +=
+          `<p>✅ ${file.name}</p>
+           <a href="${file.webViewLink}" target="_blank">Open in Drive</a><br>`;
+
+        document.getElementById("filePreview").innerHTML +=
+          `<img src="${imgUrl}" alt="${file.name}" width="300"><br>`;
+      })
+      .catch(err => console.error("Error fetching file content:", err));
+    }
+
+    /*function loadSavedFiles() {
+      let savedFiles = JSON.parse(localStorage.getItem("uploaded_files")) || [];
+      if (!savedFiles.length) return;
+
+      savedFiles.forEach(fileId => {
+        fetch(`https://www.googleapis.com/drive/v3/files/${fileId}?fields=id,name,webViewLink`, {
+          headers: { "Authorization": "Bearer " + accessToken }
+        })
+        .then(res => res.json())
+        .then(file => showFile(file))
+        .catch(err => console.error("Error loading saved file:", err));
+      });
+    }*/
+  </script>
+</body>
+</html>
